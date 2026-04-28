@@ -1,3 +1,4 @@
+import argparse
 import asyncio
 import json
 import os
@@ -104,6 +105,15 @@ async def run_full_iteration(gemini_svc: GeminiService, i: int):
     return script_res, qc_metrics
 
 async def main():
+    parser = argparse.ArgumentParser(description="Evaluate prompts.")
+    parser.add_argument("--json-output", action="store_true", help="Output metrics to JSON file.")
+    args = parser.parse_args()
+
+    if args.json_output:
+        import sys
+        import os
+        sys.stdout = open(os.devnull, 'w')
+
     print("🚀 Starting Exact Statistical Calibration (100 Iterations)...")
     settings = get_settings()
     client = genai.Client(vertexai=True, project=settings.project_id, location=settings.region)
@@ -113,7 +123,8 @@ async def main():
     all_qc = []
     
     batch_size = 10
-    for b in range(0, 100, batch_size):
+    total_iterations = 100
+    for b in range(0, total_iterations, batch_size):
         tasks = [run_full_iteration(gemini_svc, j + 1) for j in range(b, b + batch_size)]
         batch_results = await asyncio.gather(*tasks)
         for s, q in batch_results:
@@ -121,9 +132,15 @@ async def main():
             all_qc.extend(q)
         print(f"   [Progress] {b + batch_size}% calibrated...")
 
-    generate_markdown_report(all_script, all_qc)
+    if args.json_output:
+        metrics = calculate_metrics(all_script, all_qc)
+        filepath = Path(__file__).parent.parent.parent / "metrics.json"
+        with open(filepath, "w") as f:
+            json.dump(metrics, f, indent=2)
+    else:
+        generate_markdown_report(all_script, all_qc)
 
-def generate_markdown_report(script_metrics, qc_metrics):
+def calculate_metrics(script_metrics, qc_metrics):
     total_iterations = 100
     all_json_calls = script_metrics + qc_metrics
     
@@ -138,15 +155,27 @@ def generate_markdown_report(script_metrics, qc_metrics):
     
     avg_latency = sum([m["latency"] for m in all_json_calls]) / len(all_json_calls)
     
+    return {
+        "zero_shot_pass_rate": zero_shot_rate,
+        "prompt_adherence_rate": adherence_rate,
+        "multi_agent_rate": multi_agent_rate,
+        "avg_latency": avg_latency
+    }
+
+def generate_markdown_report(script_metrics, qc_metrics):
+    metrics = calculate_metrics(script_metrics, qc_metrics)
+    total_iterations = 100
+    all_json_calls = script_metrics + qc_metrics
+    
     table = [
         "# Rigorous Prompt Benchmarking (CAIS 2026)",
         "",
         "| Metric | Total Samples | Statistical Value |",
         "| :--- | :--- | :--- |",
-        f"| **Prompt Adherence (JSON/Pydantic)** | {len(all_json_calls)} | {adherence_rate:.1f}% |",
-        f"| **Zero-Shot Pass Rate (Iter 1)** | {total_iterations} | {zero_shot_rate:.1f}% |",
-        f"| **Multi-Agent Pass Rate (3-Retries)** | {total_iterations} | {multi_agent_rate:.1f}% |",
-        f"| **Average Agent Latency** | {len(all_json_calls)} | {avg_latency:.2f}s |",
+        f"| **Prompt Adherence (JSON/Pydantic)** | {len(all_json_calls)} | {metrics['prompt_adherence_rate']:.1f}% |",
+        f"| **Zero-Shot Pass Rate (Iter 1)** | {total_iterations} | {metrics['zero_shot_pass_rate']:.1f}% |",
+        f"| **Multi-Agent Pass Rate (3-Retries)** | {total_iterations} | {metrics['multi_agent_rate']:.1f}% |",
+        f"| **Average Agent Latency** | {len(all_json_calls)} | {metrics['avg_latency']:.2f}s |",
         "",
         "## Exact Statistical Calibration",
         "",
